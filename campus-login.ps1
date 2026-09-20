@@ -60,23 +60,44 @@ function Test-Internet {
     } catch { return $false }
 }
 
-function Get-QueryString {
-    $qs = $null
+# 判断 WiFi 是否已连上(是否有有效 IPv4)
+function Test-NetworkConnected {
     try {
-        $req = [System.Net.HttpWebRequest]::Create("http://www.msftconnecttest.com/redirect")
-        $req.AllowAutoRedirect = $false
-        $req.Timeout = 5000
-        $req.UserAgent = "Mozilla/5.0"
-        try { $resp = $req.GetResponse() } catch [System.Net.WebException] { $resp = $_.Exception.Response }
-        if ($resp) {
-            $loc = $resp.Headers["Location"]
-            if ($loc -and $loc -match "eportal" -and $loc.IndexOf('?') -gt 0) {
-                $qs = $loc.Substring($loc.IndexOf('?') + 1)
+        $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+              Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
+              Select-Object -First 1
+        return ($null -ne $ip)
+    } catch { return $false }
+}
+
+# 从网关重定向里获取本次连接的 queryString
+# 离线时网关会把任意外部 http 请求 302 重定向到门户并带上参数;
+# 依次尝试多个触发地址, 用裸 IP 兜底(避免 DNS 解析失败)
+function Get-QueryString {
+    $triggerUrls = @(
+        "http://www.msftconnecttest.com/redirect",
+        "http://1.1.1.1/",
+        "http://223.5.5.5/"
+    )
+    foreach ($url in $triggerUrls) {
+        try {
+            $req = [System.Net.HttpWebRequest]::Create($url)
+            $req.AllowAutoRedirect = $false
+            $req.Timeout = 6000
+            $req.UserAgent = "Mozilla/5.0"
+            $resp = $null
+            try { $resp = $req.GetResponse() }
+            catch [System.Net.WebException] { $resp = $_.Exception.Response }
+            if ($resp) {
+                $loc = $resp.Headers["Location"]
+                try { $resp.Close() } catch {}
+                if ($loc -and $loc.IndexOf('?') -gt 0 -and $loc -match "eportal") {
+                    return $loc.Substring($loc.IndexOf('?') + 1)
+                }
             }
-            try { $resp.Close() } catch {}
-        }
-    } catch {}
-    return $qs
+        } catch {}
+    }
+    return $null
 }
 
 function Invoke-Login([string]$queryString) {
@@ -197,9 +218,13 @@ if (Test-Internet) {
     for ($i = 1; $i -le $maxAttempts; $i++) {
         if ($i -gt 1) { Start-Sleep -Seconds $retryDelay }
         if (Test-Internet) { Write-Log "已联网, 无需登录。"; $success = $true; break }
+        if (-not (Test-NetworkConnected)) {
+            Write-Log "第 $i 次: WiFi 尚未连上(无有效 IP), 等待网络... (最多 $maxAttempts 次, 每 $retryDelay 秒)"
+            continue
+        }
         $qs = Get-QueryString
         if (-not $qs) {
-            Write-Log "第 $i 次: 尚未获取到网络参数(可能 WiFi 未连上), 稍后重试..."
+            Write-Log "第 $i 次: WiFi 已连但未获取到认证参数, 稍后重试..."
             continue
         }
         try {
