@@ -54,19 +54,20 @@ function Write-Log([string]$msg) {
 
 function Test-Internet {
     try {
-        $r = Invoke-WebRequest -Uri "https://www.baidu.com" -UseBasicParsing `
-              -TimeoutSec 5 -UserAgent "Mozilla/5.0" -ErrorAction Stop
-        return ($r.StatusCode -eq 200)
+        # 用 HttpWebRequest 只读状态码、不下载正文, 避免缓存整个页面
+        $req = [System.Net.HttpWebRequest]::Create("https://www.baidu.com/")
+        $req.Timeout = 5000
+        $req.UserAgent = "Mozilla/5.0"
+        $resp = $req.GetResponse()
+        try { return ([int]$resp.StatusCode -eq 200) }
+        finally { try { $resp.Close() } catch {} }
     } catch { return $false }
 }
 
 # 判断 WiFi 是否已连上(是否有有效 IPv4)
 function Test-NetworkConnected {
     try {
-        $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
-              Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
-              Select-Object -First 1
-        return ($null -ne $ip)
+        return [System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable()
     } catch { return $false }
 }
 
@@ -109,7 +110,8 @@ function Invoke-Login([string]$queryString) {
     $resp = Invoke-WebRequest -Uri $loginUrl -Method Post -Body $body `
               -ContentType "application/x-www-form-urlencoded; charset=UTF-8" `
               -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-    return $resp.Content
+    try { return $resp.Content }
+    finally { try { $resp.Dispose() } catch {} }
 }
 
 function Read-Password([string]$Prompt) {
