@@ -106,12 +106,8 @@ function Invoke-Login([string]$queryString) {
 }
 
 function Read-Password([string]$Prompt) {
-    Write-Host -NoNewline "$Prompt : "
-    $s = Read-Host -AsSecureString
-    if ($s.Length -eq 0) { return "" }
-    $b = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
-    try { return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) }
-    finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+    # 密码输入可见, 方便核对避免输错
+    return (Read-Host $Prompt)
 }
 
 function Invoke-Setup {
