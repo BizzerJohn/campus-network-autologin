@@ -38,6 +38,11 @@ A：多半是运营商选错、或账号密码输错了。
 Q：换了账号 / 换了运营商？
 A：删除 config.json，再双击「启动.bat」重新设置。
 
+Q：第一次没开启开机自启，现在想补开？
+A：在本文件夹空白处按住 Shift + 鼠标右键 →「在此处打开 PowerShell 窗口」，
+   输入下面这行后回车即可：
+       .\campus-login.ps1 -Autostart
+
 Q：想取消开机自动登录？
 A：按 Win+R 键，输入 shell:startup 回车，
    删除里面的「CampusAutoLogin」快捷方式即可。
