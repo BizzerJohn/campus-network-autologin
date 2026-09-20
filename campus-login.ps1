@@ -25,8 +25,8 @@ $portalBase = "http://10.10.9.4/eportal"   # 认证门户地址
 $loginUrl   = "$portalBase/InterFace.do?method=login"
 # ----------------------------------------------------------------
 
-$maxAttempts = 10   # 最多重试次数
-$retryDelay  = 15   # 每次间隔秒数
+$maxAttempts = 20   # 最多重试次数
+$retryDelay  = 5    # 每次间隔秒数
 
 $configPath = Join-Path $PSScriptRoot "config.json"
 
@@ -56,7 +56,7 @@ function Test-Internet {
     try {
         # 用 HttpWebRequest 只读状态码、不下载正文, 避免缓存整个页面
         $req = [System.Net.HttpWebRequest]::Create("https://www.baidu.com/")
-        $req.Timeout = 5000
+        $req.Timeout = 3000
         $req.UserAgent = "Mozilla/5.0"
         $resp = $req.GetResponse()
         try { return ([int]$resp.StatusCode -eq 200) }
@@ -71,34 +71,21 @@ function Test-NetworkConnected {
     } catch { return $false }
 }
 
-# 从网关重定向里获取本次连接的 queryString
-# 离线时网关会把任意外部 http 请求 302 重定向到门户并带上参数;
-# 依次尝试多个触发地址, 用裸 IP 兜底(避免 DNS 解析失败)
+# 直接从本机 IP + MAC 重建认证参数(不依赖网关重定向, 稳定可靠)
+# 实测: 不带 vid/port/nasportid 也能登录成功, 故此处省略它们
 function Get-QueryString {
-    $triggerUrls = @(
-        "http://www.msftconnecttest.com/redirect",
-        "http://1.1.1.1/",
-        "http://223.5.5.5/"
-    )
-    foreach ($url in $triggerUrls) {
-        try {
-            $req = [System.Net.HttpWebRequest]::Create($url)
-            $req.AllowAutoRedirect = $false
-            $req.Timeout = 6000
-            $req.UserAgent = "Mozilla/5.0"
-            $resp = $null
-            try { $resp = $req.GetResponse() }
-            catch [System.Net.WebException] { $resp = $_.Exception.Response }
-            if ($resp) {
-                $loc = $resp.Headers["Location"]
-                try { $resp.Close() } catch {}
-                if ($loc -and $loc.IndexOf('?') -gt 0 -and $loc -match "eportal") {
-                    return $loc.Substring($loc.IndexOf('?') + 1)
-                }
-            }
-        } catch {}
-    }
-    return $null
+    try {
+        $ipObj = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+                 Where-Object { $_.IPAddress -like "10.*" } | Select-Object -First 1
+        if (-not $ipObj) { return $null }
+        $ip = $ipObj.IPAddress
+        $adapter = Get-NetAdapter -ErrorAction Stop |
+                   Where-Object { $_.ifIndex -eq $ipObj.InterfaceIndex } | Select-Object -First 1
+        if (-not $adapter) { return $null }
+        $mac = ($adapter.MacAddress -replace "-", "").ToLower()
+        if ([string]::IsNullOrEmpty($mac)) { return $null }
+        return "wlanuserip=$ip&wlanacname=FSN-XX-Business&ssid=&nasip=10.10.9.1&snmpagentip=&mac=$mac&t=wireless-v2-plain&url=http://www.msftconnecttest.com/redirect&apmac=&nasid=FSN-XX-Business"
+    } catch { return $null }
 }
 
 function Invoke-Login([string]$queryString) {
@@ -219,29 +206,30 @@ if (Test-Internet) {
     $success = $false
     for ($i = 1; $i -le $maxAttempts; $i++) {
         if ($i -gt 1) { Start-Sleep -Seconds $retryDelay }
-        if (Test-Internet) { Write-Log "已联网, 无需登录。"; $success = $true; break }
         if (-not (Test-NetworkConnected)) {
-            Write-Log "第 $i 次: WiFi 尚未连上(无有效 IP), 等待网络... (最多 $maxAttempts 次, 每 $retryDelay 秒)"
+            Write-Log "第 $i 次: WiFi 尚未连上, 等待网络..."
             continue
         }
         $qs = Get-QueryString
         if (-not $qs) {
-            Write-Log "第 $i 次: WiFi 已连但未获取到认证参数, 稍后重试..."
+            Write-Log "第 $i 次: 未获取到本机网络参数, 稍后重试..."
             continue
         }
         try {
             $content = Invoke-Login $qs
             Write-Log "第 $i 次: 服务器返回 -> $content"
             if ($content -match '"result"\s*:\s*"success"') {
-                Write-Log "登录成功!"
-                $success = $true
-                break
+                Start-Sleep -Seconds 2
+                if (Test-Internet) {
+                    Write-Log "登录成功, 已联网!"
+                    $success = $true
+                    break
+                }
+                Write-Log "第 $i 次: 认证成功但尚未生效, 继续重试..."
             }
         } catch {
             Write-Log "第 $i 次: 请求异常 -> $($_.Exception.Message)"
         }
-        Start-Sleep -Seconds 3
-        if (Test-Internet) { Write-Log "联网成功。"; $success = $true; break }
     }
     if (-not $success) {
         Write-Log "多次尝试后仍未联网, 请确认账号/密码/运营商是否正确。"
