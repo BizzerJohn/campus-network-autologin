@@ -25,8 +25,8 @@ $portalBase = "http://10.10.9.4/eportal"   # 认证门户地址
 $loginUrl   = "$portalBase/InterFace.do?method=login"
 # ----------------------------------------------------------------
 
-$maxAttempts = 20   # 最多重试次数
-$retryDelay  = 5    # 每次间隔秒数
+$maxAttempts = 30   # 最多重试次数
+$retryDelay  = 3    # 每次间隔秒数
 
 $configPath = Join-Path $PSScriptRoot "config.json"
 
@@ -56,7 +56,7 @@ function Test-Internet {
     try {
         # 用 HttpWebRequest 只读状态码、不下载正文, 避免缓存整个页面
         $req = [System.Net.HttpWebRequest]::Create("https://www.baidu.com/")
-        $req.Timeout = 3000
+        $req.Timeout = 2000
         $req.UserAgent = "Mozilla/5.0"
         $resp = $req.GetResponse()
         try { return ([int]$resp.StatusCode -eq 200) }
@@ -72,20 +72,24 @@ function Test-NetworkConnected {
 }
 
 # 直接从本机 IP + MAC 重建认证参数(不依赖网关重定向, 稳定可靠)
+# 用纯 .NET 取 IP/MAC, 避免加载 PowerShell 网络模块(更快)
 # 实测: 不带 vid/port/nasportid 也能登录成功, 故此处省略它们
 function Get-QueryString {
     try {
-        $ipObj = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
-                 Where-Object { $_.IPAddress -like "10.*" } | Select-Object -First 1
-        if (-not $ipObj) { return $null }
-        $ip = $ipObj.IPAddress
-        $adapter = Get-NetAdapter -ErrorAction Stop |
-                   Where-Object { $_.ifIndex -eq $ipObj.InterfaceIndex } | Select-Object -First 1
-        if (-not $adapter) { return $null }
-        $mac = ($adapter.MacAddress -replace "-", "").ToLower()
-        if ([string]::IsNullOrEmpty($mac)) { return $null }
-        return "wlanuserip=$ip&wlanacname=FSN-XX-Business&ssid=&nasip=10.10.9.1&snmpagentip=&mac=$mac&t=wireless-v2-plain&url=http://www.msftconnecttest.com/redirect&apmac=&nasid=FSN-XX-Business"
-    } catch { return $null }
+        $nics = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()
+        foreach ($nic in $nics) {
+            if ($nic.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up) { continue }
+            foreach ($addr in $nic.GetIPProperties().UnicastAddresses) {
+                if ($addr.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+                $ip = $addr.Address.ToString()
+                if (-not $ip.StartsWith("10.")) { continue }
+                $mac = [BitConverter]::ToString($nic.GetPhysicalAddress().GetAddressBytes()).Replace("-", "").ToLower()
+                if ([string]::IsNullOrEmpty($mac)) { continue }
+                return "wlanuserip=$ip&wlanacname=FSN-XX-Business&ssid=&nasip=10.10.9.1&snmpagentip=&mac=$mac&t=wireless-v2-plain&url=http://www.msftconnecttest.com/redirect&apmac=&nasid=FSN-XX-Business"
+            }
+        }
+    } catch {}
+    return $null
 }
 
 function Invoke-Login([string]$queryString) {
@@ -219,7 +223,7 @@ if (Test-Internet) {
             $content = Invoke-Login $qs
             Write-Log "第 $i 次: 服务器返回 -> $content"
             if ($content -match '"result"\s*:\s*"success"') {
-                Start-Sleep -Seconds 2
+                Start-Sleep -Seconds 1
                 if (Test-Internet) {
                     Write-Log "登录成功, 已联网!"
                     $success = $true
