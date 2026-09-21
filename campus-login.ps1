@@ -29,6 +29,7 @@ $maxAttempts = 30   # 最多重试次数
 $retryDelay  = 3    # 每次间隔秒数
 
 $configPath = Join-Path $PSScriptRoot "config.json"
+$logFile    = Join-Path $PSScriptRoot "login.log"
 
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
@@ -49,7 +50,9 @@ function JsEncodeURIComponent([string]$str) {
 }
 
 function Write-Log([string]$msg) {
-    Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg)
+    $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+    Write-Host $line
+    try { Add-Content -Path $logFile -Value $line -Encoding UTF8 } catch {}
 }
 
 function Test-Internet {
